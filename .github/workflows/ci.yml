@@ -1,0 +1,110 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+  schedule:
+    - cron: '5 4 * * 1'
+
+jobs:
+  cache_example:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Demonstrate $HOME is not available to the runner.
+      run: |
+        echo $HOME matches ${TEST_HOME_AVAILABLE}
+      env:
+        TEST_HOME_AVAILABLE: ${{ env.HOME }}
+
+    - name: Set up environment
+      run: |
+        # We need to let the runner of the CI know the $HOME in the
+        # job so we can use it as our caching path.
+        echo "HOME=$HOME" >> $GITHUB_ENV
+
+    - name: Demonstrate $HOME is available to the runner.
+      run: |
+        echo $HOME matches ${TEST_HOME_AVAILABLE}
+      env:
+        TEST_HOME_AVAILABLE: ${{ env.HOME }}
+
+    # These are needed for gerbv.
+    - name: Install dependencies
+      run: |
+        mkdir -p $HOME/.local
+        sudo apt-get update
+        sudo apt-get install -y autopoint libgtkmm-2.4-dev
+
+    # We load the cache if it exists.  It should be named so that jobs
+    # that need the same cache will have the same name.  In this
+    # example, we call it "cache_example".  The name can include '-'
+    # characters, too.
+    - name: Cache local install path
+      uses: eyal0/cache@main
+      with:
+        path: ${{ env.HOME }}/.local
+        # The key has run_id and run_attempt appended so that it is
+        # always unique.  Use the '-' character to separate the parts
+        # as below.
+        key: cache_example-${{ github.run_id }}-${{ github.run_attempt }}
+        # Here we have the original name with just the '-' character appended.
+        restore-keys: |
+          cache_example-
+        update-env-variable: "UPDATE_CACHE" # This is the environment
+                                            # variable that will
+                                            # decide if we should
+                                            # write the cache or not.
+    - name: Default don't update cache
+      # We'll start by assuming that whatever cache we loaded is
+      # current.  We'll set our environment variable that we named
+      # above to "false" to force no update.
+      run: echo "UPDATE_CACHE=false" >> $GITHUB_ENV
+
+
+    # We just do this for information, you don't have to do this.
+    - name: Check what the latest version of gerbv is
+      run: |
+        echo "The latest commit is $(git ls-remote https://github.com/gerbv/gerbv.git heads/main | cut -f 1)"
+
+
+    # We just do this for information, you don't have to do this.
+    - name: Check what the cached version of gerbv is
+      continue-on-error: true
+      run: |
+        echo "In the cache, we stored the sha:"
+        cat $HOME/.local/gerbv.sha
+
+
+    # Now we install gerbv, but only if the online version is not the
+    # same as the one that we have cached.
+    - name: Install gerbv
+      run: |
+        # If the sha in the cache doesn't match the latest sha,
+        # re-install.
+        if ! grep -qx "$(git ls-remote https://github.com/gerbv/gerbv.git heads/main)" $HOME/.local/gerbv.sha; then
+
+          # Store the sha into the path of the cache so that we'll
+          # have it for next time.
+          git ls-remote https://github.com/gerbv/gerbv.git heads/main > $HOME/.local/gerbv.sha
+
+          # Force saving the cache later because we're installing a new version.
+          echo "UPDATE_CACHE=true" >> $GITHUB_ENV
+
+          # Install gerbv the usual way, into $HOME/.local, which is
+          # our cache directory.
+          pushd ~
+          git clone --depth=1 --branch=master https://github.com/eyal0/gerbv.git
+          pushd gerbv
+          sh autogen.sh
+          ./configure CPPFLAGS=$CPPFLAGS_gerbv --disable-update-desktop-database --prefix=$HOME/.local
+          make -j 4
+          make install
+          popd
+          popd
+        fi
+    - name: Test that gerbv works
+      run: |
+        hash -r
+        gerbv --version
